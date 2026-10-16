@@ -3,6 +3,75 @@
 All notable changes to this project are documented here. Release tags follow
 Semantic Versioning; wireless-bridge candidates use `0.1.0-rcN`.
 
+## [0.1.0-rc51-prospero-exp1] - 2026-10-16 (unofficial fork, experimental)
+
+> Fork-only entry. Not part of upstream PoorDS4; not reviewed by ItsBlurf.
+
+### Added
+
+- **GOT / `.rela.dyn` (`GLOB_DAT`) import-hook scanning alongside the existing
+  PLT scan**, in `game_bridge_collect_import_hooks`
+  (`payload/wireless_ds4.c`). Upstream only scanned `.rela.plt`
+  (`R_X86_64_JUMP_SLOT`), which finds zero hooks in a target built with
+  `-fno-plt` (e.g. the public [ProsperoEden](https://github.com/A1vinSmith/prosperoeden)
+  Switch emulator source, which compiles `scePadRead`/`scePadReadState` calls
+  to `R_X86_64_GLOB_DAT` GOT entries instead of PLT stubs). The new table is
+  accepted only for `GLOB_DAT` relocations with a zero addend, an undefined
+  (`SHN_UNDEF`) `FUNC`/`NOTYPE` symbol, and an exact match against one of the
+  seven known ScePad import names — it never falls back to pointer-value
+  matching for unresolved GOT names the way the PLT path can, which keeps the
+  wider scan from acting on anything it cannot positively identify.
+- `tools/build-experimental.sh` and `tests/import-scanner-test.py` /
+  `tests/static-audit-portable.py` to build and test this change without the
+  Windows/PowerShell toolchain upstream's scripts assume.
+- Per-stage `first-failure-fw-<fw>-pid-<pid>-<stage>.txt` reports (written
+  once, not overwritten on retry) so a later table failure can't erase an
+  earlier import-scan failure during diagnosis.
+
+### Fixed
+
+- `game_bridge_symbol_kind` used prefix matching (`strncmp` against
+  `strlen(name)`) for full import names, which could in principle match
+  `scePadReadState` as `scePadRead` since one name is a prefix of the other.
+  Replaced with exact `strcmp`. NID matching was similarly tightened to
+  require a terminator or `#` version suffix immediately after the 11-byte
+  NID instead of accepting any longer string with the same prefix.
+- Import symbol-name buffer widened from a fixed 12 bytes to 64, with the
+  read length clamped to the remaining `.strtab` size before the copy, to
+  support real (unversioned) symbol names instead of only 11-byte NIDs.
+
+### Verified
+
+- Rebuilt from source with ps5-payload-sdk v0.42 (Clang 22.1.8 / LLD 23.1.3);
+  injected-stub bytes (20,096 bytes) byte-identical to a clean rebuild of
+  unmodified upstream RC51 with the same toolchain.
+- A synthetic ELF fixture with only a `-fno-plt`-style `.rela.dyn` entry for
+  `scePadRead`/`scePadReadState` is missed (zero hooks) by the unmodified
+  upstream scanner and correctly detected by this fork's scanner.
+- 21 unit tests exercise the real collector function body (not a
+  reimplementation) against mocked bounded memory: GOT/PLT handling, NID and
+  full-name identity, table bounds, ownership filtering, and stale-hook
+  discovery.
+- Confirmed on PS5 Slim, firmware 13.60: DualShock 4 control of the
+  ProsperoEden menu/input via the attached `PoorDS4-rc51-prospero-exp1.elf`.
+
+### Known limitations
+
+- DS4 rumble is **not** confirmed working with this build.
+- No adaptive-trigger or other DualSense feature-parity claim is made; the
+  native DualSense input path is untouched.
+- Not tested: any other emulator, any specific Switch game inside
+  ProsperoEden, multi-controller use under ProsperoEden, or any firmware
+  other than 13.60.
+- Module load/unload concurrent with the scan, and behavior under a hard
+  kernel panic mid-write, were not exercised on hardware. The
+  hook-install/rollback mechanism itself (verify-before-write,
+  restore-already-patched-slots-on-later-failure) is unchanged from upstream.
+- `tests/static-audit-portable.py` reports one failing assertion: its
+  hard-coded tracked-file inventory does not include the three new files this
+  fork adds. All functional assertions, including the 21 real-collector
+  cases, pass.
+
 ## [0.1.0-rc51] - 2026-09-29
 
 ### Added

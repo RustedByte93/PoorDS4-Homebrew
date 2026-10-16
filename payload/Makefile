@@ -13,8 +13,7 @@ endif
 
 include $(PS5_PAYLOAD_SDK)/toolchain/prospero.mk
 
-CC := ps5-clang.cmd
-STRIP := llvm-strip
+# CC and STRIP come from the SDK; command-line overrides remain supported.
 
 CFLAGS  += -D__PROSPERO__ -Wall -Wextra -Wshadow -Wunreachable-code \
 	-Werror -g -O2 -fPIC \
@@ -24,7 +23,7 @@ LDFLAGS      += -Wl,--gc-sections,--build-id=sha1
 RUNTIME_LIBS := -nodefaultlibs -lc -lkernel_web -lSceLibcInternal
 BRIDGE_LIBS  := $(RUNTIME_LIBS) -lSceUserService
 
-.PHONY: all audit clean deploy release status stop
+.PHONY: all audit clean deploy release status stop experimental
 
 all: $(TARGET) $(EXP_TARGET)
 
@@ -63,3 +62,11 @@ ifndef PS5_HOST
 	$(error PS5_HOST is not set)
 endif
 	nc -w 8 $(PS5_HOST) $(PORT) < $(TARGET)
+
+# Explicit experimental names; never copy over an official RC51 artifact.
+experimental: PoorDS4-rc51-prospero-exp1.elf
+
+PoorDS4-rc51-prospero-exp1.elf: game_pad_bridge_main.c wireless_ds4.c wireless_ds4.h pad_types.h
+	$(CC) $(CFLAGS) -DPOORDS4_AUTO_WATCH=1 \
+		-DPOORDS4_RC_VERSION=$(RC_VERSION) -o $@ \
+		game_pad_bridge_main.c wireless_ds4.c $(LDFLAGS) $(BRIDGE_LIBS)

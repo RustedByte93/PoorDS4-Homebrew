@@ -1,5 +1,7 @@
 # PoorDS4
 
+> **This fork (`PoorDS4-Homebrew`, maintained by `RustedByte93`) is an unofficial fork** of [ItsBlurf/PoorDS4](https://github.com/ItsBlurf/PoorDS4) adding experimental GOT/`GLOB_DAT` import-hook scanning for `-fno-plt`-built homebrew such as ProsperoEden. ItsBlurf is the author and maintainer of upstream PoorDS4 and has not reviewed or endorsed this fork. See "Experimental: ProsperoEden (Switch Emulator) Support" below for what changed and what was and was not tested.
+
 > PoorDS4 would not have been possible without the excellent work behind
 > [Ghostcontrol](https://github.com/StonedModder/Ghostcontrol-PS5-USB-Controller-Patcher)
 > by StonedModder. Its controller research and PS5 payload foundation made this
@@ -123,6 +125,103 @@ directory and include the steps that reproduced the failure. Source and game
 reports identify `poords4_rc` and `report_schema`. Review reports before posting
 them publicly because they contain runtime process addresses and controller
 diagnostics.
+
+## Experimental: ProsperoEden (Switch Emulator) Support — This Fork
+
+> **This section describes an unofficial, experimental change made in this
+> fork (`PoorDS4-Homebrew` by RustedByte93).** It has not been reviewed or
+> endorsed by ItsBlurf, the author of upstream PoorDS4. Please do not direct
+> bug reports about this change to the upstream project.
+
+### What changed and why
+
+Upstream PoorDS4's import scanner (`game_bridge_collect_import_hooks` in
+`payload/wireless_ds4.c`) only walked `.rela.plt` (`R_X86_64_JUMP_SLOT`)
+relocations. The public [ProsperoEden](https://github.com/A1vinSmith/prosperoeden)
+Switch emulator source is built with `-fno-plt`, so its calls into
+`scePadRead`/`scePadReadState` compile to `R_X86_64_GLOB_DAT` entries in
+`.rela.dyn` instead of PLT stubs — a binary built that way is invisible to the
+original PLT-only scan, which finds zero hooks for it.
+
+This fork adds a second relocation table to the same scan: `.rela.dyn`
+entries are accepted **only** when the relocation type is `GLOB_DAT`, the
+addend is zero, the symbol is undefined (`SHN_UNDEF`) with type `FUNC`/`NOTYPE`,
+and the resolved name matches one of the seven known ScePad import symbols
+exactly (no prefix matching — a prior version of this logic could in theory
+misidentify `scePadReadState` as `scePadRead` since one name is a prefix of
+the other; this fork requires an exact name match or a correctly terminated
+NID). All existing safety checks are unchanged: module ownership filtering,
+table bounds/overflow checks, slot-must-still-hold-the-original-pointer
+verification before any write, duplicate-slot rejection, and the existing
+rollback path that un-patches already-installed hooks if a later hook in the
+same batch fails to install. No hook-installation or rollback code was
+modified — only which relocation entries are considered candidates.
+
+### What was actually tested
+
+- **Confirmed on hardware**: a user reported that `PoorDS4-rc51-prospero-exp1.elf`
+  successfully bridges a Bluetooth DualShock 4 for ProsperoEden menu/input on a
+  PS5 Slim, firmware 13.60. This is the build attached to this release.
+- **Confirmed by automated tests** (`tests/import-scanner-test.py`, run against
+  the real collector function, not a reimplementation): 21 cases covering
+  GOT/PLT relocation handling, NID and full-name identity matching, table
+  bounds, ownership filtering, and stale-hook discovery; plus a regression
+  test proving the unmodified upstream scanner finds zero hooks on a
+  `-fno-plt`-style fixture that this fork's scanner correctly detects.
+- **Not verified / explicitly out of scope for this release**:
+  - DS4 rumble/vibration. It is not confirmed working in this build.
+  - Adaptive triggers or any DualSense feature parity — this project does not
+    touch the native DualSense input path at all.
+  - Any other emulator, any specific Switch game running inside ProsperoEden,
+    any multiplayer/multi-controller configuration under ProsperoEden, or any
+    firmware other than 13.60.
+  - Behavior if a module is loaded/unloaded concurrently with the scan, or
+    survival of a hard kernel panic mid-write — these were not exercised on
+    real hardware and are inherited, unchanged, from upstream's existing
+    hook-install/rollback mechanism.
+- **Known test-suite limitation**: this fork's `tests/static-audit-portable.py`
+  (a portable re-implementation of upstream's `tests/static-audit.ps1`) will
+  report one failing assertion — the hard-coded tracked-file inventory check —
+  because this fork adds three new tracked files (`tools/build-experimental.sh`,
+  `tests/import-scanner-test.py`, `tests/static-audit-portable.py`) that the
+  upstream list does not know about. All functional assertions, including the
+  21 real-collector cases, pass.
+
+### The three release binaries
+
+| File | Purpose |
+| --- | --- |
+| `PoorDS4-rc51-prospero-exp1.elf` | Main bridge. Load this to start the experimental bridge. |
+| `PoorDS4-status-prospero-exp1.elf` | Read-only status snapshot of the running bridge; writes a report, does not start anything. |
+| `PoorDS4-stop-prospero-exp1.elf` | Cooperative stop request to an already-running bridge instance. |
+
+### Pairing, loading, and verifying it worked
+
+1. Pair your DualShock 4 over Bluetooth to the PS5 user profile that will run
+   ProsperoEden (`Settings > Accessories > Bluetooth Accessories`).
+2. If a build of this bridge (or the official `PoorDS4rc51.elf`) is already
+   running, load `PoorDS4-stop-prospero-exp1.elf` first and wait for it to
+   finish before loading another main payload. Never run two main bridge
+   instances at once.
+3. Load `PoorDS4-rc51-prospero-exp1.elf` through your ELF loader (port 9021).
+4. Open ProsperoEden. Check `/data/poords4/game-pad-bridge-supervisor.txt` for
+   `build_id=rc51-prospero-exp1` and look for an `import_hook ... relocation=GLOB_DAT`
+   line followed by `result=1` in the reports under `/data/poords4/reports/`.
+5. Run `PoorDS4-status-prospero-exp1.elf` while ProsperoEden is still open to
+   capture a status snapshot if you want to report back.
+
+### Reverting to the official build
+
+Load `PoorDS4-stop-prospero-exp1.elf`, wait for the existing instance to stop,
+then load the official `PoorDS4rc51.elf` from the
+[upstream project](https://github.com/ItsBlurf/PoorDS4). No reinstall of
+ProsperoEden or the jailbreak environment is required.
+
+### Warning
+
+This is **experimental, unofficial** homebrew. Crashes may occur. Back up your
+saves before testing. Do not add this build to autoload while testing — load
+it manually each time.
 
 ## Multi-Controller Support (Experimental)
 

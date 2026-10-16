@@ -4,6 +4,17 @@
 #include <stdint.h>
 #include <sys/types.h>
 
+#define POORDS4_BUILD_ID "rc51-prospero-exp1"
+
+/* Existing RC51 app-info contract, shared by reports and summaries. */
+typedef struct app_info {
+    uint32_t app_id;
+    uint64_t unknown1;
+    char     title_id[14];
+    char     unknown2[0x3c];
+} app_info_t;
+extern int sceKernelGetAppInfo(pid_t pid, app_info_t *info);
+
 #define POORDS4_MAX_USER_CANDIDATES 6u
 
 typedef struct {

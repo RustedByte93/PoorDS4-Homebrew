@@ -22,13 +22,6 @@
 #include "pad_types.h"
 #include "wireless_ds4.h"
 
-typedef struct app_info {
-    uint32_t app_id;
-    uint64_t unknown1;
-    char     title_id[14];
-    char     unknown2[0x3c];
-} app_info_t;
-extern int sceKernelGetAppInfo(pid_t pid, app_info_t *info);
 
 #define POORDS4_DATA_DIR   "/data/poords4"
 #define GAME_BRIDGE_STOP_FILE  POORDS4_DATA_DIR "/stop-game-pad-bridge"
@@ -424,6 +417,7 @@ write_supervisor_state(const char *state, pid_t game_pid,
     int length = snprintf(
         report, sizeof(report),
         "pid=%d\nheartbeat_epoch=%lld\nrc_version=%d\n"
+        "build_id=" POORDS4_BUILD_ID "\n"
         "auto_watch=%d\nstate=%s\n"
         "game_pid=%d\nsessions=%u\noutput_frames=%llu\n"
         "reader_pid=%d\nreader_args=0x%lx\n"
@@ -731,7 +725,7 @@ write_game_session_summary(
     app_info_t appinfo;
     memset(&appinfo, 0, sizeof(appinfo));
     if (sceKernelGetAppInfo(game_pid, &appinfo) == 0 && appinfo.title_id[0] != '\0') {
-        snprintf(title_id, sizeof(title_id), "%s", appinfo.title_id);
+        snprintf(title_id, sizeof(title_id), "%.*s", (int)sizeof(appinfo.title_id), appinfo.title_id);
     }
 
     uint32_t fw = 0;
@@ -1774,7 +1768,7 @@ main(void)
     write_supervisor_state("starting", -1, 0, 0, 1);
     (void)sceUserServiceInitialize(NULL);
     poords4_log(
-        "[PoorDS4] game bridge start rc=%d auto_watch=%d\n",
+        "[PoorDS4] build=" POORDS4_BUILD_ID " game bridge start rc=%d auto_watch=%d\n",
         POORDS4_RC_VERSION, POORDS4_AUTO_WATCH);
     game_bridge_notify(
         "PoorDS4: wireless DS4 bridge injected; starting reader");

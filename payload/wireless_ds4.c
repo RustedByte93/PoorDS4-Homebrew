@@ -3726,6 +3726,9 @@ typedef struct {
     uint64_t strtab_size;
     uint64_t plt_rela;
     uint64_t plt_rela_size;
+    /* SDK v0.42 crt/kernel.h: dynlib_dynsec.rela / relasize. */
+    uint64_t rela;
+    uint64_t rela_size;
 } GameBridgeDynlibSectionPrefix;
 
 typedef struct {
@@ -3749,6 +3752,9 @@ _Static_assert(offsetof(GameBridgeDynlibSectionPrefix, symtab) == 0x28,
                "rtld symtab offset changed");
 _Static_assert(offsetof(GameBridgeDynlibSectionPrefix, plt_rela) == 0x48,
                "rtld PLT relocation offset changed");
+
+_Static_assert(offsetof(GameBridgeDynlibSectionPrefix, rela) == 0x58,
+               "rtld non-PLT relocation offset changed");
 
 static int game_bridge_collect_import_hooks(
     pid_t target, intptr_t libpad_base, const intptr_t originals[7],
@@ -3862,13 +3868,14 @@ game_bridge_symbol_kind(const char *name, const char nids[7][12], const char *co
         return -1;
     if (nids) {
         for (unsigned kind = 0; kind < 7; ++kind) {
-            if (memcmp(name, nids[kind], 11) == 0)
+            if (strncmp(name, nids[kind], 11) == 0 &&
+                (name[11] == '\0' || name[11] == '#'))
                 return (int)kind;
         }
     }
     if (names) {
         for (unsigned kind = 0; kind < 7; ++kind) {
-            if (strncmp(name, names[kind], strlen(names[kind])) == 0)
+            if (strcmp(name, names[kind]) == 0)
                 return (int)kind;
         }
     }
@@ -4074,218 +4081,251 @@ game_bridge_collect_import_hooks(
                 (unsigned long long)object.dynsec);
             return -1;
         }
-        if (!section.symtab || !section.strtab || !section.plt_rela ||
+        if (!section.symtab || !section.strtab ||
             section.symtab_size == 0 || section.strtab_size == 0 ||
-            section.plt_rela_size == 0 ||
             section.symtab_size > UINT64_C(0x02000000) ||
             section.strtab_size > UINT64_C(0x02000000) ||
-            section.plt_rela_size > UINT64_C(0x02000000) ||
-            section.symtab_size % sizeof(Elf64_Sym) != 0 ||
-            section.plt_rela_size % sizeof(Elf64_Rela) != 0)
+            section.symtab_size % sizeof(Elf64_Sym) != 0)
             continue;
         uint64_t symbol_count = section.symtab_size / sizeof(Elf64_Sym);
-        uint64_t rela_count = section.plt_rela_size / sizeof(Elf64_Rela);
-        relocation_count += rela_count > UINT_MAX
-            ? UINT_MAX : (unsigned)rela_count;
-        for (uint64_t index = 0; index < rela_count; ++index) {
-            Elf64_Rela rela;
-            intptr_t rela_address = (intptr_t)(section.plt_rela +
-                index * sizeof(rela));
-            if (kernel_copyout(
-                    rela_address, &rela, sizeof(rela)) != 0 &&
-                game_bridge_process_read(
-                    target, rela_address, &rela, sizeof(rela)) != 0) {
-                report_printf(
-                    report_fd,
-                    "import_scan_error=rela object=%u index=%llu\n",
-                    object_count - 1u, (unsigned long long)index);
+        const uint64_t tables[2] = {section.plt_rela, section.rela};
+        const uint64_t sizes[2] = {section.plt_rela_size, section.rela_size};
+        report_printf(report_fd,
+            "import_tables object=%u plt_bytes=0x%llx rela_bytes=0x%llx\n",
+            object_count - 1u, (unsigned long long)sizes[0],
+            (unsigned long long)sizes[1]);
+        for (unsigned table = 0; table < 2u; ++table) {
+            if (sizes[table] == 0)
+                continue;
+            if (!tables[table] || sizes[table] > UINT64_C(0x02000000) ||
+                sizes[table] % sizeof(Elf64_Rela) != 0 ||
+                tables[table] > UINT64_MAX - sizes[table]) {
+                report_printf(report_fd,
+                    "import_scan_error=relocation_bounds object=%u table=%u\n",
+                    object_count - 1u, table);
                 return -1;
             }
-            uint64_t symbol_index = ELF64_R_SYM(rela.r_info);
-            if (symbol_index >= symbol_count)
-                continue;
-            Elf64_Sym symbol;
-            intptr_t symbol_address = (intptr_t)(section.symtab +
-                symbol_index * sizeof(symbol));
-            if (kernel_copyout(
-                    symbol_address, &symbol, sizeof(symbol)) != 0 &&
-                game_bridge_process_read(
-                    target, symbol_address,
-                    &symbol, sizeof(symbol)) != 0) {
-                report_printf(
-                    report_fd,
-                    "import_scan_error=symbol object=%u index=%llu\n",
-                    object_count - 1u,
-                    (unsigned long long)symbol_index);
-                return -1;
-            }
-            if ((uint64_t)symbol.st_name + 11u > section.strtab_size)
-                continue;
-            char symbol_name[12];
-            memset(symbol_name, 0, sizeof(symbol_name));
-            intptr_t name_address = (intptr_t)(
-                section.strtab + symbol.st_name);
-            int name_read = kernel_copyout(
-                name_address, symbol_name, sizeof(symbol_name) - 1u);
-            if (name_read != 0) {
-                /* The SDK primitive can reject one transfer spanning two
-                 * kernel metadata pages. Retry the fixed 11-byte NID one
-                 * byte at a time before considering a target-space read. */
-                name_read = 0;
-                for (size_t byte = 0;
-                     byte < sizeof(symbol_name) - 1u; ++byte) {
-                    if (kernel_copyout(
-                            name_address + (intptr_t)byte,
-                            symbol_name + byte, 1u) != 0) {
-                        name_read = -1;
-                        break;
-                    }
+            uint64_t rela_count = sizes[table] / sizeof(Elf64_Rela);
+            relocation_count += (unsigned)rela_count;
+            for (uint64_t index = 0; index < rela_count; ++index) {
+                Elf64_Rela rela;
+                intptr_t rela_address = (intptr_t)(tables[table] +
+                    index * sizeof(rela));
+                if (kernel_copyout(
+                        rela_address, &rela, sizeof(rela)) != 0 &&
+                    game_bridge_process_read(
+                        target, rela_address, &rela, sizeof(rela)) != 0) {
+                    report_printf(
+                        report_fd,
+                        "import_scan_error=rela object=%u index=%llu\n",
+                        object_count - 1u, (unsigned long long)index);
+                    return -1;
                 }
-            }
-            if (name_read != 0)
-                name_read = game_bridge_process_read(
-                    target, name_address, symbol_name,
-                    sizeof(symbol_name) - 1u);
-            int kind = name_read == 0
-                ? game_bridge_symbol_kind(symbol_name, nids, names) : -1;
-            if (name_read == 0 && kind < 0 &&
-                rela.r_offset <= object.mapsize - sizeof(uint64_t)) {
-                intptr_t check_slot = (intptr_t)(
-                    object.mapbase + rela.r_offset);
-                uint64_t check_val = 0;
-                if (check_slot > 0 && mdbg_copyout(
-                        target, check_slot, &check_val, sizeof(check_val)) == 0) {
-                    for (unsigned candidate_kind = 0;
-                         candidate_kind < 7u; ++candidate_kind) {
-                        if (check_val == (uint64_t)originals[candidate_kind]) {
-                            kind = (int)candidate_kind;
+                /* -fno-plt homebrew calls use GLOB_DAT GOT entries, not PLT.
+                 * Never treat RELATIVE, COPY, TLS or an interior function pointer
+                 * (nonzero addend) as a callable import. */
+                const unsigned relocation_type = ELF64_R_TYPE(rela.r_info);
+                if ((table == 0 && relocation_type != R_X86_64_JMP_SLOT) ||
+                    (table == 1 && relocation_type != R_X86_64_GLOB_DAT) ||
+                    rela.r_addend != 0)
+                    continue;
+                uint64_t symbol_index = ELF64_R_SYM(rela.r_info);
+                if (symbol_index >= symbol_count)
+                    continue;
+                Elf64_Sym symbol;
+                intptr_t symbol_address = (intptr_t)(section.symtab +
+                    symbol_index * sizeof(symbol));
+                if (kernel_copyout(
+                        symbol_address, &symbol, sizeof(symbol)) != 0 &&
+                    game_bridge_process_read(
+                        target, symbol_address,
+                        &symbol, sizeof(symbol)) != 0) {
+                    report_printf(
+                        report_fd,
+                        "import_scan_error=symbol object=%u index=%llu\n",
+                        object_count - 1u,
+                        (unsigned long long)symbol_index);
+                    return -1;
+                }
+                if (symbol.st_shndx != SHN_UNDEF ||
+                    (ELF64_ST_TYPE(symbol.st_info) != STT_FUNC &&
+                     ELF64_ST_TYPE(symbol.st_info) != STT_NOTYPE))
+                    continue;
+                if ((uint64_t)symbol.st_name >= section.strtab_size)
+                    continue;
+                char symbol_name[64];
+                memset(symbol_name, 0, sizeof(symbol_name));
+                intptr_t name_address = (intptr_t)(
+                    section.strtab + symbol.st_name);
+                size_t name_length = sizeof(symbol_name) - 1u;
+                if (section.strtab_size - symbol.st_name < name_length)
+                    name_length = (size_t)(section.strtab_size - symbol.st_name);
+                int name_read = kernel_copyout(
+                    name_address, symbol_name, name_length);
+                if (name_read != 0) {
+                    /* The SDK primitive can reject one transfer spanning two
+                     * kernel metadata pages. Retry the fixed 11-byte NID one
+                     * byte at a time before considering a target-space read. */
+                    name_read = 0;
+                    for (size_t byte = 0;
+                         byte < name_length; ++byte) {
+                        if (kernel_copyout(
+                                name_address + (intptr_t)byte,
+                                symbol_name + byte, 1u) != 0) {
+                            name_read = -1;
                             break;
                         }
                     }
                 }
-            }
-            if (name_read != 0) {
-                if (rela.r_offset >
-                        object.mapsize - sizeof(uint64_t))
+                if (name_read != 0)
+                    name_read = game_bridge_process_read(
+                        target, name_address, symbol_name,
+                        name_length);
+                int kind = name_read == 0
+                    ? game_bridge_symbol_kind(symbol_name, nids, names) : -1;
+                if (table == 1 && (name_read != 0 || kind < 0))
                     continue;
-                intptr_t fallback_slot = (intptr_t)(
-                    object.mapbase + rela.r_offset);
-                uint64_t fallback_current = 0;
-                if (fallback_slot <= 0 || mdbg_copyout(
-                        target, fallback_slot, &fallback_current,
-                        sizeof(fallback_current)) != 0) {
+                if (name_read == 0 && kind < 0 &&
+                    rela.r_offset <= object.mapsize - sizeof(uint64_t)) {
+                    intptr_t check_slot = (intptr_t)(
+                        object.mapbase + rela.r_offset);
+                    uint64_t check_val = 0;
+                    if (check_slot > 0 && mdbg_copyout(
+                            target, check_slot, &check_val, sizeof(check_val)) == 0) {
+                        for (unsigned candidate_kind = 0;
+                             candidate_kind < 7u; ++candidate_kind) {
+                            if (check_val == (uint64_t)originals[candidate_kind]) {
+                                kind = (int)candidate_kind;
+                                break;
+                            }
+                        }
+                    }
+                }
+                if (name_read != 0) {
+                    if (rela.r_offset >
+                            object.mapsize - sizeof(uint64_t))
+                        continue;
+                    intptr_t fallback_slot = (intptr_t)(
+                        object.mapbase + rela.r_offset);
+                    uint64_t fallback_current = 0;
+                    if (fallback_slot <= 0 || mdbg_copyout(
+                            target, fallback_slot, &fallback_current,
+                            sizeof(fallback_current)) != 0) {
+                        report_printf(
+                            report_fd,
+                            "import_scan_error=name_slot object=%u "
+                            "index=%llu slot=0x%lx\n",
+                            object_count - 1u,
+                            (unsigned long long)symbol_index,
+                            (unsigned long)fallback_slot);
+                        return -1;
+                    }
+                    for (unsigned candidate_kind = 0;
+                         candidate_kind < 7u; ++candidate_kind) {
+                        if (fallback_current ==
+                                (uint64_t)originals[candidate_kind]) {
+                            kind = (int)candidate_kind;
+                            break;
+                        }
+                    }
+                    if (kind >= 0) {
+                        report_printf(
+                            report_fd,
+                            "import_name_fallback object=%u index=%llu "
+                            "slot=0x%lx kind=%d current=0x%llx\n",
+                            object_count - 1u,
+                            (unsigned long long)symbol_index,
+                            (unsigned long)fallback_slot, kind,
+                            (unsigned long long)fallback_current);
+                    } else if (game_bridge_pointer_in_loaded_object(
+                                   target, fallback_current) == 1) {
+                        report_printf(
+                            report_fd,
+                            "import_name_skipped object=%u index=%llu "
+                            "slot=0x%lx current=0x%llx "
+                            "reason=known-module-target\n",
+                            object_count - 1u,
+                            (unsigned long long)symbol_index,
+                            (unsigned long)fallback_slot,
+                            (unsigned long long)fallback_current);
+                        continue;
+                    } else {
+                        report_printf(
+                            report_fd,
+                            "import_scan_error=name_unproven object=%u "
+                            "index=%llu slot=0x%lx current=0x%llx\n",
+                            object_count - 1u,
+                            (unsigned long long)symbol_index,
+                            (unsigned long)fallback_slot,
+                            (unsigned long long)fallback_current);
+                        return -1;
+                    }
+                }
+                if (kind < 0 || originals[kind] <= 0 ||
+                    rela.r_offset > object.mapsize - sizeof(uint64_t))
+                    continue;
+                intptr_t slot = (intptr_t)(object.mapbase + rela.r_offset);
+                uint64_t current = 0;
+                if (slot <= 0 || mdbg_copyout(
+                        target, slot, &current, sizeof(current)) != 0) {
                     report_printf(
                         report_fd,
-                        "import_scan_error=name_slot object=%u "
-                        "index=%llu slot=0x%lx\n",
-                        object_count - 1u,
-                        (unsigned long long)symbol_index,
-                        (unsigned long)fallback_slot);
-                    return -1;
+                        "import_slot_skipped unreadable module=0x%llx "
+                        "slot=0x%lx kind=%d\n",
+                        (unsigned long long)object.mapbase,
+                        (unsigned long)slot, kind);
+                    continue;
                 }
-                for (unsigned candidate_kind = 0;
-                     candidate_kind < 7u; ++candidate_kind) {
-                    if (fallback_current ==
-                            (uint64_t)originals[candidate_kind]) {
-                        kind = (int)candidate_kind;
+                /* BIND_NOW imports should already equal libScePad's export.
+                 * Refuse lazy/unexpected slots instead of overwriting a resolver
+                 * or a hook owned by another payload. */
+                if (current != (uint64_t)originals[kind] &&
+                    !allow_nonoriginal) {
+                    report_printf(
+                        report_fd,
+                        "import_slot_skipped module=0x%llx slot=0x%lx "
+                        "kind=%d current=0x%llx expected=0x%lx\n",
+                        (unsigned long long)object.mapbase,
+                        (unsigned long)slot, kind,
+                        (unsigned long long)current,
+                        (unsigned long)originals[kind]);
+                    continue;
+                }
+                int duplicate = 0;
+                for (uint32_t prior = 0; prior < *out_count; ++prior) {
+                    if (hooks[prior].slot == slot) {
+                        duplicate = 1;
                         break;
                     }
                 }
-                if (kind >= 0) {
-                    report_printf(
-                        report_fd,
-                        "import_name_fallback object=%u index=%llu "
-                        "slot=0x%lx kind=%d current=0x%llx\n",
-                        object_count - 1u,
-                        (unsigned long long)symbol_index,
-                        (unsigned long)fallback_slot, kind,
-                        (unsigned long long)fallback_current);
-                } else if (game_bridge_pointer_in_loaded_object(
-                               target, fallback_current) == 1) {
-                    report_printf(
-                        report_fd,
-                        "import_name_skipped object=%u index=%llu "
-                        "slot=0x%lx current=0x%llx "
-                        "reason=known-module-target\n",
-                        object_count - 1u,
-                        (unsigned long long)symbol_index,
-                        (unsigned long)fallback_slot,
-                        (unsigned long long)fallback_current);
+                if (duplicate)
                     continue;
-                } else {
-                    report_printf(
-                        report_fd,
-                        "import_scan_error=name_unproven object=%u "
-                        "index=%llu slot=0x%lx current=0x%llx\n",
-                        object_count - 1u,
-                        (unsigned long long)symbol_index,
-                        (unsigned long)fallback_slot,
-                        (unsigned long long)fallback_current);
+                if (*out_count >= POORDS4_GAME_BRIDGE_MAX_IMPORT_HOOKS) {
+                    report_printf(report_fd, "error=too_many_import_hooks\n");
                     return -1;
                 }
-            }
-            if (kind < 0 || originals[kind] <= 0 ||
-                rela.r_offset > object.mapsize - sizeof(uint64_t))
-                continue;
-            intptr_t slot = (intptr_t)(object.mapbase + rela.r_offset);
-            uint64_t current = 0;
-            if (slot <= 0 || mdbg_copyout(
-                    target, slot, &current, sizeof(current)) != 0) {
+                int protection = kernel_get_vmem_protection(
+                    target, slot, sizeof(uint64_t));
+                if (protection < 0)
+                    return -1;
+                hooks[*out_count].slot = slot;
+                hooks[*out_count].original = originals[kind];
+                hooks[*out_count].protection = (uint32_t)protection;
+                hooks[*out_count].kind = (uint32_t)kind;
                 report_printf(
                     report_fd,
-                    "import_slot_skipped unreadable module=0x%llx "
-                    "slot=0x%lx kind=%d\n",
+                    "import_hook index=%u object=%u module_handle=0x%x "
+                    "module_path=%s "
+                    "module_base=0x%llx slot=0x%lx kind=%d name=%s "
+                    "relocation=%s "
+                    "protection=0x%x current=0x%llx\n",
+                    *out_count, object_count - 1u, object.handle, object_path,
                     (unsigned long long)object.mapbase,
-                    (unsigned long)slot, kind);
-                continue;
+                    (unsigned long)slot, kind, names[kind],
+                    table == 0 ? "JUMP_SLOT" : "GLOB_DAT", protection,
+                    (unsigned long long)current);
+                (*out_count)++;
             }
-            /* BIND_NOW imports should already equal libScePad's export.
-             * Refuse lazy/unexpected slots instead of overwriting a resolver
-             * or a hook owned by another payload. */
-            if (current != (uint64_t)originals[kind] &&
-                !allow_nonoriginal) {
-                report_printf(
-                    report_fd,
-                    "import_slot_skipped module=0x%llx slot=0x%lx "
-                    "kind=%d current=0x%llx expected=0x%lx\n",
-                    (unsigned long long)object.mapbase,
-                    (unsigned long)slot, kind,
-                    (unsigned long long)current,
-                    (unsigned long)originals[kind]);
-                continue;
-            }
-            int duplicate = 0;
-            for (uint32_t prior = 0; prior < *out_count; ++prior) {
-                if (hooks[prior].slot == slot) {
-                    duplicate = 1;
-                    break;
-                }
-            }
-            if (duplicate)
-                continue;
-            if (*out_count >= POORDS4_GAME_BRIDGE_MAX_IMPORT_HOOKS) {
-                report_printf(report_fd, "error=too_many_import_hooks\n");
-                return -1;
-            }
-            int protection = kernel_get_vmem_protection(
-                target, slot, sizeof(uint64_t));
-            if (protection < 0)
-                return -1;
-            hooks[*out_count].slot = slot;
-            hooks[*out_count].original = originals[kind];
-            hooks[*out_count].protection = (uint32_t)protection;
-            hooks[*out_count].kind = (uint32_t)kind;
-            report_printf(
-                report_fd,
-                "import_hook index=%u object=%u module_handle=0x%x "
-                "module_path=%s "
-                "module_base=0x%llx slot=0x%lx kind=%d name=%s "
-                "protection=0x%x current=0x%llx\n",
-                *out_count, object_count - 1u, object.handle, object_path,
-                (unsigned long long)object.mapbase,
-                (unsigned long)slot, kind, names[kind], protection,
-                (unsigned long long)current);
-            (*out_count)++;
         }
     }
     report_printf(
@@ -4983,6 +5023,25 @@ wireless_ds4_game_bridge_run_passive(
         source->pad_index, (uint32_t)source->pad_handle,
         (uint32_t)source->ds4_connected, POORDS4_RC_VERSION);
 
+    app_info_t app_info;
+    memset(&app_info, 0, sizeof(app_info));
+    int app_info_result = sceKernelGetAppInfo(target, &app_info);
+    char title[sizeof(app_info.title_id) + 1u];
+    memset(title, 0, sizeof(title));
+    if (app_info_result == 0) {
+        for (size_t i = 0; i < sizeof(app_info.title_id) && app_info.title_id[i]; ++i) {
+            unsigned char ch = (unsigned char)app_info.title_id[i];
+            title[i] = (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') ||
+                ch == '_' || ch == '-' ? (char)ch : '?';
+        }
+    }
+    report_printf(report_fd,
+        "build_id=" POORDS4_BUILD_ID "\n"
+        "target_name=eboot.bin\napp_info_result=0x%08x\n"
+        "app_id=0x%08x\ntitle_id=%s\n",
+        (uint32_t)app_info_result, app_info_result == 0 ? app_info.app_id : 0u,
+        title[0] ? title : "UNKNOWN");
+    const char *install_stage = "resolve";
     uint32_t libpad_handle = 0;
     if (get_lib(target, "libScePad", &libpad_handle) != 0) {
         report_printf(report_fd, "error=libpad\n");
@@ -5016,6 +5075,7 @@ wireless_ds4_game_bridge_run_passive(
     report_printf(report_fd, "libpad_handle=0x%x libpad_base=0x%lx\n",
                   libpad_handle, (unsigned long)base);
     game_bridge_report_libpad_layout(target, base, report_fd);
+    game_bridge_dump_modules_report(target, base, NULL, 0);
     const uint32_t offsets_1160[6] = {
         POORDS4_READ_STATE_OFFSET_1160,
         POORDS4_READ_STATE_EXT_OFFSET_1160,
@@ -5275,6 +5335,7 @@ wireless_ds4_game_bridge_run_passive(
         "controller_info=0x%x\n",
         state_target_protection, read_target_protection,
         data_target_protection, controller_info_protection);
+    install_stage = "abi";
     if (!structural_abi) {
         report_printf(
             report_fd,
@@ -5286,6 +5347,7 @@ wireless_ds4_game_bridge_run_passive(
         goto done;
     }
 
+    install_stage = "client-table";
     int32_t game_pad_handle = -1;
     int32_t game_pad_index = -1;
     int32_t slot_handles[POORDS4_MAX_SLOTS] = {-1, -1, -1, -1};
@@ -5302,6 +5364,7 @@ wireless_ds4_game_bridge_run_passive(
     }
 
     memset(hooks, 0, sizeof(hooks));
+    install_stage = "imports";
     int stale_result = game_bridge_recover_stale_v1(
         target, base, originals, hooks, &hook_count, report_fd);
     if (stale_result != 0) {
@@ -5314,6 +5377,7 @@ wireless_ds4_game_bridge_run_passive(
     }
 
 
+    install_stage = "mapping-and-patch";
     uintptr_t local_stub_base = (uintptr_t)game_pad_read_state_stub;
     uintptr_t local_stub_end =
         (uintptr_t)game_pad_bridge_stub_end;
@@ -5538,8 +5602,35 @@ rollback:
         }
     }
 done:
-    if (result != 1)
+    report_printf(report_fd, "install_stage=%s\n", install_stage);
+    if (result != 1) {
         report_printf(report_fd, "result=%d\n", result);
+        char failure_path[192];
+        snprintf(failure_path, sizeof(failure_path),
+            POORDS4_DATA_DIR "/reports/first-failure-fw-%08x-pid-%d-%s.txt",
+            firmware, target, install_stage);
+        /* Existing per-PID reports are overwritten on retry. Keep the first
+         * failure of each stage so an exit-time table failure cannot hide an
+         * earlier import failure. No memory writes or admission changes. */
+        int input = open(POORDS4_DATA_DIR "/game-pad-bridge-last.txt", O_RDONLY);
+        int output = input >= 0
+            ? open(failure_path, O_WRONLY | O_CREAT | O_EXCL, 0600) : -1;
+        if (output >= 0) {
+            char block[1024];
+            ssize_t n;
+            while ((n = read(input, block, sizeof(block))) > 0) {
+                ssize_t offset = 0;
+                while (offset < n) {
+                    ssize_t written = write(output, block + offset, (size_t)(n - offset));
+                    if (written <= 0) break;
+                    offset += written;
+                }
+                if (offset != n) break;
+            }
+            close(output);
+        }
+        if (input >= 0) close(input);
+    }
     if (report_fd >= 0)
         close(report_fd);
     if (g_report_archive_fd >= 0) {

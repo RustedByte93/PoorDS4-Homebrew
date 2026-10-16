@@ -23,3 +23,15 @@ and compiled binaries are not redistributed here; their authorship remains in
 the shared upstream Git history.
 
 PoorDS4 is distributed under GPL-3.0-or-later. See [LICENSE](LICENSE).
+
+## Fork notice (this repository)
+
+This repository (`PoorDS4-Homebrew`) is an unofficial fork of
+[ItsBlurf/PoorDS4](https://github.com/ItsBlurf/PoorDS4), maintained by
+`RustedByte93`. All attributions above apply unchanged to the inherited code.
+ItsBlurf is the author and maintainer of upstream PoorDS4; ItsBlurf has not
+reviewed, tested, or endorsed the changes in this fork. This fork adds a
+single, narrowly-scoped change — GOT/`GLOB_DAT` relocation scanning alongside
+the existing PLT scan, to support `-fno-plt`-built homebrew such as
+ProsperoEden — described in the README and CHANGELOG. No other part of
+upstream PoorDS4 was modified.
