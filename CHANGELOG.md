@@ -52,12 +52,16 @@ Semantic Versioning; wireless-bridge candidates use `0.1.0-rcN`.
   reimplementation) against mocked bounded memory: GOT/PLT handling, NID and
   full-name identity, table bounds, ownership filtering, and stale-hook
   discovery.
-- Confirmed on PS5 Slim, firmware 13.60: DualShock 4 control of the
-  ProsperoEden menu/input via the attached `PoorDS4-rc51-prospero-exp1.elf`.
+- Confirmed on PS5 Slim, firmware 13.60, across several games inside
+  ProsperoEden via the attached `PoorDS4-rc51-prospero-exp1.elf`: DS4
+  buttons/sticks/D-pad, touchpad input, and motion sensors (gyro/accelerometer)
+  all reported working by the tester. This is a hands-on tester report, not
+  an automated test, and does not cover every game or ProsperoEden build.
 
 ### Known limitations
 
-- DS4 rumble is **not** confirmed working with this build.
+- DS4 rumble is **confirmed not working** with this build; the maintainer is
+  actively working on it.
 - No adaptive-trigger or other DualSense feature-parity claim is made; the
   native DualSense input path is untouched.
 - Not tested: any other emulator, any specific Switch game inside

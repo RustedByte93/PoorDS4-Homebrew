@@ -159,9 +159,17 @@ modified — only which relocation entries are considered candidates.
 
 ### What was actually tested
 
-- **Confirmed on hardware**: a user reported that `PoorDS4-rc51-prospero-exp1.elf`
-  successfully bridges a Bluetooth DualShock 4 for ProsperoEden menu/input on a
-  PS5 Slim, firmware 13.60. This is the build attached to this release.
+- **Confirmed on hardware** by a tester running `PoorDS4-rc51-prospero-exp1.elf`
+  on a PS5 Slim, firmware 13.60 (this is the build attached to this release),
+  across several different games inside ProsperoEden:
+  - DualShock 4 buttons, sticks, and D-pad.
+  - Touchpad input.
+  - Motion sensors (gyro/accelerometer).
+  - The tester describes overall behavior across the games tried as working
+    well. This is a hands-on tester report, not an automated test, and does
+    not cover every game or ProsperoEden build.
+- **Confirmed not working**: DS4 rumble/vibration. The maintainer is actively
+  working on this; it is not part of what this release claims to support.
 - **Confirmed by automated tests** (`tests/import-scanner-test.py`, run against
   the real collector function, not a reimplementation): 21 cases covering
   GOT/PLT relocation handling, NID and full-name identity matching, table
@@ -169,11 +177,11 @@ modified — only which relocation entries are considered candidates.
   test proving the unmodified upstream scanner finds zero hooks on a
   `-fno-plt`-style fixture that this fork's scanner correctly detects.
 - **Not verified / explicitly out of scope for this release**:
-  - DS4 rumble/vibration. It is not confirmed working in this build.
   - Adaptive triggers or any DualSense feature parity — this project does not
     touch the native DualSense input path at all.
-  - Any other emulator, any specific Switch game running inside ProsperoEden,
-    any multiplayer/multi-controller configuration under ProsperoEden, or any
+  - Exhaustive coverage of every Switch game or ProsperoEden build — testing
+    so far covers multiple games, not all of them.
+  - Any multiplayer/multi-controller configuration under ProsperoEden, or any
     firmware other than 13.60.
   - Behavior if a module is loaded/unloaded concurrently with the scan, or
     survival of a hard kernel panic mid-write — these were not exercised on
